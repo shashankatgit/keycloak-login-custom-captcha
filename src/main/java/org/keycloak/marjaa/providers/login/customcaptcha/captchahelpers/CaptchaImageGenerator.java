@@ -35,6 +35,7 @@ public class CaptchaImageGenerator {
      private static int CANVAS_HEIGHT = 40;
     private static int CANVAS_WIDTH = 175;
     
+    /* Creates image based on the text provided */
     public static String generate(String captchaText) {
         BufferedImage image = new BufferedImage(CANVAS_WIDTH, CANVAS_HEIGHT, BufferedImage.TYPE_BYTE_INDEXED);
 

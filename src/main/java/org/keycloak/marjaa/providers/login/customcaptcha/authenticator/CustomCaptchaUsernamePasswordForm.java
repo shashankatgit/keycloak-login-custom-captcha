@@ -1,122 +1,92 @@
+/* Modified by Shashank Singh */
 package org.keycloak.marjaa.providers.login.customcaptcha.authenticator;
 
-import java.io.InputStream;
 import java.util.ArrayList;
-import java.util.LinkedList;
 import java.util.List;
-import java.util.Map;
-
 import javax.ws.rs.core.MultivaluedMap;
-
-import org.apache.http.HttpResponse;
-import org.apache.http.NameValuePair;
-import org.apache.http.client.HttpClient;
-import org.apache.http.client.entity.UrlEncodedFormEntity;
-import org.apache.http.client.methods.HttpPost;
-import org.apache.http.message.BasicNameValuePair;
-import org.jboss.logging.Logger;
 import org.keycloak.authentication.AuthenticationFlowContext;
 import org.keycloak.authentication.Authenticator;
 import org.keycloak.authentication.authenticators.browser.UsernamePasswordForm;
-import org.keycloak.connections.httpclient.HttpClientProvider;
 import org.keycloak.events.Details;
+import org.keycloak.events.Errors;
 import org.keycloak.forms.login.LoginFormsProvider;
-import org.keycloak.models.AuthenticatorConfigModel;
+import org.keycloak.marjaa.providers.login.customcaptcha.captchahelpers.CaptchaImageGenerator;
+import org.keycloak.marjaa.providers.login.customcaptcha.captchahelpers.CaptchaTextGenerator;
 import org.keycloak.models.utils.FormMessage;
-import org.keycloak.services.ServicesLogger;
-import org.keycloak.services.messages.Messages;
-import org.keycloak.services.validation.Validation;
-import org.keycloak.util.JsonSerialization;
 
-public class CustomCaptchaUsernamePasswordForm extends UsernamePasswordForm implements Authenticator{
-	public static final String G_RECAPTCHA_RESPONSE = "g-recaptcha-response";
-	public static final String RECAPTCHA_REFERENCE_CATEGORY = "recaptcha";
-	public static final String SITE_KEY = "site.key";
-	public static final String SITE_SECRET = "secret";
-	private static final Logger logger = Logger.getLogger(CustomCaptchaUsernamePasswordFormFactory.class);
+public class CustomCaptchaUsernamePasswordForm extends UsernamePasswordForm implements Authenticator {
 
-	@Override
-	public void authenticate(AuthenticationFlowContext context) {
-		context.getEvent().detail(Details.AUTH_METHOD, "auth_method");
-		if (logger.isInfoEnabled()) {
-			logger.info(
-					"validateRecaptcha(AuthenticationFlowContext, boolean, String, String) - Before the validation");
-		}
+    private static final String MESSAGE_INVALID_CAPTCHA = "Invalid Captcha";
 
-		AuthenticatorConfigModel captchaConfig = context.getAuthenticatorConfig();
-		LoginFormsProvider form = context.form();
-		String userLanguageTag = context.getSession().getContext().resolveLocale(context.getUser()).toLanguageTag();
+    @Override
+    /* This method is called when the login page is opened. */
+    public void authenticate(AuthenticationFlowContext context) {
+        context.getEvent().detail(Details.AUTH_METHOD, "auth_method");
 
-		if (captchaConfig == null || captchaConfig.getConfig() == null
-				|| captchaConfig.getConfig().get(SITE_KEY) == null
-				|| captchaConfig.getConfig().get(SITE_SECRET) == null) {
-			form.addError(new FormMessage(null, Messages.RECAPTCHA_NOT_CONFIGURED));
-			return;
-		}
-		String siteKey = captchaConfig.getConfig().get(SITE_KEY);
-		form.setAttribute("recaptchaRequired", true);
-		form.setAttribute("recaptchaSiteKey", siteKey);
-		form.addScript("https://www.google.com/recaptcha/api.js?hl=" + userLanguageTag);
+        LoginFormsProvider form = context.form();
 
-		super.authenticate(context);
-	}
+        String captcha = CaptchaTextGenerator.generate();
 
-	@Override
-	public void action(AuthenticationFlowContext context) {
-		if (logger.isDebugEnabled()) {
-			logger.debug("action(AuthenticationFlowContext) - start");
-		}
-		MultivaluedMap<String, String> formData = context.getHttpRequest().getDecodedFormParameters();
-		List<FormMessage> errors = new ArrayList<>();
-		boolean success = false;
-		context.getEvent().detail(Details.AUTH_METHOD, "auth_method");
+        // Setting an auth note so that it can be fetched later for the user entered input to be matched against. 
+        // It is quite similar to a session variable 
+        context.getAuthenticationSession().setAuthNote("Captcha", captcha);
 
-		String captcha = formData.getFirst(G_RECAPTCHA_RESPONSE);
-		if (!Validation.isBlank(captcha)) {
-			AuthenticatorConfigModel captchaConfig = context.getAuthenticatorConfig();
-			String secret = captchaConfig.getConfig().get(SITE_SECRET);
+        // This will set the base64 data of userInputCaptcha image to be shown in the login page. 
+        // This will be used in login.ftl of a theme compatible with this
+        form.setAttribute("captchaImageBase64", "data:image/jpeg;base64," + CaptchaImageGenerator.generate(captcha));
 
-			success = validateRecaptcha(context, success, captcha, secret);
-		}
-		if (success) {
-			super.action(context);
-		} else {
-			errors.add(new FormMessage(null, Messages.RECAPTCHA_FAILED));
-			formData.remove(G_RECAPTCHA_RESPONSE);
-			// context.error(Errors.INVALID_REGISTRATION);
-			// context.validationError(formData, errors);
-			// context.excludeOtherErrors();
-			return;
-		}
+        // Out intervention stops here. Let's proceed naturally now to the super method. 
+        super.authenticate(context);
+    }
 
-		if (logger.isDebugEnabled()) {
-			logger.debug("action(AuthenticationFlowContext) - end");
-		}
-	}
-	
-	protected boolean validateRecaptcha(AuthenticationFlowContext context, boolean success, String captcha, String secret) {
-		HttpClient httpClient = context.getSession().getProvider(HttpClientProvider.class).getHttpClient();
-		HttpPost post = new HttpPost("https://www.google.com/recaptcha/api/siteverify");
-		List<NameValuePair> formparams = new LinkedList<>();
-		formparams.add(new BasicNameValuePair("secret", secret));
-		formparams.add(new BasicNameValuePair("response", captcha));
-		formparams.add(new BasicNameValuePair("remoteip", context.getConnection().getRemoteAddr()));
-		try {
-			UrlEncodedFormEntity form = new UrlEncodedFormEntity(formparams, "UTF-8");
-			post.setEntity(form);
-			HttpResponse response = httpClient.execute(post);
-			InputStream content = response.getEntity().getContent();
-			try {
-				Map json = JsonSerialization.readValue(content, Map.class);
-				Object val = json.get("success");
-				success = Boolean.TRUE.equals(val);
-			} finally {
-				content.close();
-			}
-		} catch (Exception e) {
-			ServicesLogger.LOGGER.recaptchaFailed(e);
-		}
-		return success;
-	}    
+    @Override
+    /* This method is called when the login details are submitted on the login page. */
+    public void action(AuthenticationFlowContext context) {
+
+        MultivaluedMap<String, String> formData = context.getHttpRequest().getDecodedFormParameters();
+        List<FormMessage> errors = new ArrayList<>();
+        boolean captchaSuccess = false;
+        context.getEvent().detail(Details.AUTH_METHOD, "auth_method");
+
+        /* Retreive the user entered userInputCaptcha */
+        String userInputCaptcha = formData.getFirst("captcha");
+
+        /* Matching with Auth Note */
+        if (context.getAuthenticationSession().getAuthNote("Captcha").equals(userInputCaptcha)) {
+            captchaSuccess = true;
+        }
+
+        if (captchaSuccess) { //Captcha Matches With Auth Note
+            if (formData.containsKey("cancel")) {
+                context.cancelLogin();
+                return;
+            }
+            if (!validateForm(context, formData)) { //validateForm is an inherited method from UsernamePasswordForm
+
+                /* Let's hand over to super method */
+                authenticate(context);
+                return;
+            }
+            context.success();
+        } else {
+
+            // Let's raise an error event
+            // Since there is nothing related to Captcha by default, we'll use just any error 
+            context.getEvent().error(Errors.USER_NOT_FOUND);
+            LoginFormsProvider form = context.form().setExecution(context.getExecution().getId());
+
+            /* Let's set the error message which will be displayed to user on login page */
+            form.setError(MESSAGE_INVALID_CAPTCHA);
+
+            /* Recreating the form */
+            form.createLogin();
+
+            /* For regeneration of captcha */
+            authenticate(context);
+
+            return;
+        }
+
+    }
 
 }
